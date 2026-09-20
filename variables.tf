@@ -74,3 +74,85 @@ variable "kms_deletion_window_days" {
     error_message = "kms_deletion_window_days must be between 7 and 30."
   }
 }
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+
+variable "api_name" {
+  description = "Name of the HTTP API this configuration deploys."
+  type        = string
+  default     = "platform-http-api"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,26}[a-z0-9]$", var.api_name))
+    error_message = "api_name must be 3-28 characters, lower-case alphanumeric and hyphens, starting with a letter and not ending in a hyphen."
+  }
+}
+
+variable "api_description" {
+  description = "Description recorded on the API."
+  type        = string
+  default     = "HTTP API front door"
+}
+
+variable "api_integrations" {
+  description = <<-EOT
+    Backends the API can reach. Empty by default: every integration names a
+    function or an endpoint owned outside this configuration, so a placeholder
+    default would deploy an API pointing at an account that does not exist.
+    The repository README carries a worked example.
+  EOT
+  type = map(object({
+    type                   = string
+    uri                    = string
+    integration_method     = optional(string)
+    payload_format_version = optional(string, "2.0")
+    timeout_milliseconds   = optional(number, 30000)
+    connection_type        = optional(string, "INTERNET")
+    vpc_link_id            = optional(string)
+    request_parameters     = optional(map(string), {})
+    description            = optional(string)
+  }))
+  default = {}
+}
+
+variable "api_routes" {
+  description = "Routes exposed by the API. Empty by default, for the same reason as api_integrations."
+  type = map(object({
+    route_key                = string
+    integration_key          = string
+    authorization_type       = optional(string, "NONE")
+    authorizer_id            = optional(string)
+    authorization_scopes     = optional(list(string), [])
+    throttling_burst_limit   = optional(number)
+    throttling_rate_limit    = optional(number)
+    detailed_metrics_enabled = optional(bool)
+  }))
+  default = {}
+}
+
+variable "api_cors_configuration" {
+  description = "Cross-origin configuration for the API. Null when the API is not called from a browser."
+  type = object({
+    allow_origins     = list(string)
+    allow_methods     = optional(list(string), ["GET", "HEAD", "OPTIONS"])
+    allow_headers     = optional(list(string), ["authorization", "content-type"])
+    expose_headers    = optional(list(string), [])
+    allow_credentials = optional(bool, false)
+    max_age           = optional(number, 300)
+  })
+  default = null
+}
+
+variable "api_stage_name" {
+  description = "Stage serving the API."
+  type        = string
+  default     = "$default"
+}
+
+variable "api_disable_default_endpoint" {
+  description = "Refuse requests to the generated execute-api endpoint. Turn this on once a custom domain fronts the API."
+  type        = bool
+  default     = false
+}
