@@ -1,0 +1,25 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Local variable files may contain account-specific values
+*.tfvars
+*.tfvars.json
+!example.tfvars
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
