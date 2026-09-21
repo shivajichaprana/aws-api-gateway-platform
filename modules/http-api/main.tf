@@ -223,7 +223,20 @@ resource "aws_apigatewayv2_api" "this" {
   }
 
   tags = local.tags
+}
 
+# These three describe the route table, so they are checked on a node of their
+# own rather than on the API.
+#
+# A precondition is evaluated as part of the resource that carries it, which
+# means it also becomes part of that resource's dependencies. Carried on the
+# API, a check that reads var.routes made the API's own identifier depend on
+# the route table -- and an identifier that depends on routes cannot be used to
+# build anything a route then refers to. Authorizers are exactly that: they are
+# created against the API id, and routes name the authorizer that decides them.
+# The plan-time failure is unchanged, because all three read inputs that are
+# known before anything is created.
+resource "terraform_data" "route_table_guards" {
   lifecycle {
     precondition {
       condition     = length(local.routes_with_unknown_integration) == 0

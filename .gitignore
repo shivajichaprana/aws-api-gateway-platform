@@ -23,3 +23,11 @@ terraform.rc
 .vscode/
 *.swp
 .DS_Store
+
+# Packaged function bundles, written at plan time next to the module that
+# builds them
+.terraform-build/
+
+# Python bytecode, which a local syntax check leaves behind
+__pycache__/
+*.py[cod]

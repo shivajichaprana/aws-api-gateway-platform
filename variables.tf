@@ -118,16 +118,94 @@ variable "api_integrations" {
 }
 
 variable "api_routes" {
-  description = "Routes exposed by the API. Empty by default, for the same reason as api_integrations."
+  description = <<-EOT
+    Routes exposed by the API. Empty by default, for the same reason as
+    api_integrations.
+
+    A protected route names its authorizer by the key it was declared under in
+    api_jwt_authorizers or api_lambda_authorizers, not by identifier: an
+    authorizer id only exists after an apply, so writing one here means copying
+    a value that changes whenever the authorizer is replaced.
+
+    On a JWT route, authorization_scopes are matched as ANY-of. A route listing
+    three scopes admits a token holding one of them. To require all of them,
+    point the route at a Lambda authorizer declared with scope_enforcement.
+  EOT
   type = map(object({
     route_key                = string
     integration_key          = string
     authorization_type       = optional(string, "NONE")
-    authorizer_id            = optional(string)
+    authorizer_key           = optional(string)
     authorization_scopes     = optional(list(string), [])
     throttling_burst_limit   = optional(number)
     throttling_rate_limit    = optional(number)
     detailed_metrics_enabled = optional(bool)
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for _, v in var.api_routes :
+      v.authorizer_key != null if contains(["JWT", "CUSTOM"], v.authorization_type)
+    ])
+    error_message = "A JWT or CUSTOM route must name the authorizer_key that decides it."
+  }
+
+  validation {
+    condition = alltrue([
+      for _, v in var.api_routes :
+      v.authorizer_key == null if contains(["NONE", "AWS_IAM"], v.authorization_type)
+    ])
+    error_message = "authorizer_key applies only to a JWT or CUSTOM route. AWS_IAM is decided by SigV4 and an IAM policy, and NONE is decided by nothing."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Authorizers
+# ---------------------------------------------------------------------------
+
+variable "api_jwt_authorizers" {
+  description = <<-EOT
+    Authorizers that verify a JWT inside API Gateway, keyed by a name routes
+    refer to. Each names either an issuer or a Cognito user pool.
+
+    See modules/authorizers for the full contract, including why a scoped route
+    decided by one of these is satisfied by any one of its scopes.
+  EOT
+  type = map(object({
+    audience             = list(string)
+    issuer               = optional(string)
+    cognito_user_pool_id = optional(string)
+    identity_source      = optional(string, "$request.header.Authorization")
+  }))
+  default = {}
+}
+
+variable "api_lambda_authorizers" {
+  description = <<-EOT
+    Authorizers that call a function to decide a request, keyed by a name routes
+    refer to. Each either names an existing function or declares
+    scope_enforcement, which deploys the bundled authorizer and requires every
+    scope a route asks for rather than any one of them.
+  EOT
+  type = map(object({
+    function_arn            = optional(string)
+    identity_sources        = optional(list(string), ["$request.header.Authorization"])
+    result_ttl_in_seconds   = optional(number, 0)
+    payload_format_version  = optional(string, "2.0")
+    enable_simple_responses = optional(bool, true)
+    scope_enforcement = optional(object({
+      issuer                = string
+      audience              = list(string)
+      required_scopes       = optional(map(list(string)), {})
+      unlisted_route_action = optional(string, "deny")
+      jwks_cache_seconds    = optional(number, 600)
+      clock_skew_seconds    = optional(number, 60)
+      memory_size           = optional(number, 256)
+      timeout_seconds       = optional(number, 5)
+      log_retention_days    = optional(number, 90)
+      log_kms_key_arn       = optional(string)
+    }))
   }))
   default = {}
 }

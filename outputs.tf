@@ -67,3 +67,37 @@ output "integration_cors_headers_discarded" {
   description = "True when CORS is configured, in which case API Gateway discards any CORS headers the integration returns."
   value       = module.http_api.integration_cors_headers_discarded
 }
+
+# ---------------------------------------------------------------------------
+# Authorizers
+# ---------------------------------------------------------------------------
+
+output "authorizer_ids" {
+  description = "Every authorizer, keyed by the name routes refer to."
+  value       = module.authorizers.authorizer_ids
+}
+
+output "jwt_issuers" {
+  description = "Issuer URL each JWT authorizer resolved to. A Cognito entry shows the URL derived from the pool id, which is what a token's iss claim has to equal exactly."
+  value       = module.authorizers.jwt_issuers
+}
+
+output "authorizers_with_cached_results" {
+  description = "Lambda authorizers whose decisions are cached, and for how long. A cached allow outlives the token that produced it for the rest of the window."
+  value       = module.authorizers.authorizers_with_cached_results
+}
+
+output "scope_enforced_routes" {
+  description = "Routes whose scopes are required in full, keyed by <authorizer>/<route key>. A JWT route carrying authorization_scopes is not here and is satisfied by any one of them."
+  value       = module.authorizers.scope_enforced_routes
+}
+
+output "authorizer_invocations_not_granted" {
+  description = "Lambda authorizers whose functions were not granted to API Gateway by this configuration."
+  value       = module.authorizers.authorizer_invocations_not_granted
+}
+
+output "scope_enforcement_log_groups" {
+  description = "Log group holding each bundled authorizer's decisions. A denial is recorded there with its reason; the caller is told only that it was denied."
+  value       = module.authorizers.scope_enforcement_log_groups
+}

@@ -18,6 +18,7 @@ then returns a status code that does not name its cause:
 | A catch-all route is present | A misspelled path reaches the backend instead of returning `404` |
 | CORS is configured and the backend also sets CORS headers | The backend's headers are discarded; the browser still refuses |
 | The integration takes longer than the API's own ceiling | `504` to the client while the work continues, and is billed |
+| A protected route lists the scopes a caller needs | Any **one** of them is enough; the list reads as a requirement and is enforced as alternatives |
 
 None of these produce a failed `terraform apply`. The purpose of this repository
 is to move as many of them as possible to plan time, and to make the rest
@@ -31,7 +32,7 @@ visible in a place an operator will actually look.
 | `providers.tf` | Regional provider and default tags |
 | `variables.tf` | Root inputs |
 | `modules/http-api/` | HTTP API, routes, stage and access logging |
-| `modules/authorizers/` | JWT and Lambda request authorizers (planned) |
+| `modules/authorizers/` | JWT and Lambda request authorizers, and a scope-enforcing authorizer function |
 | `modules/rest-api/` | Usage plans, API keys and throttling (planned) |
 | `openapi/` | OpenAPI documents imported into the API (planned) |
 
@@ -105,6 +106,49 @@ names the cause of a `5xx`. The module ships a format that carries it and
 refuses a supplied format that does not. See
 [`modules/http-api/README.md`](modules/http-api/README.md) for what each field
 distinguishes.
+
+## Authorization
+
+Two kinds of authorizer, and the choice between them is not about cost.
+
+A **JWT authorizer** verifies the token inside the gateway against keys it
+fetches from the issuer. Nothing is cached, so a token stops working the moment
+it expires. Scopes on such a route are matched **ANY-of**: a route listing three
+scopes is granted to a token holding one.
+
+A **Lambda authorizer** calls a function. Declare it with `scope_enforcement`
+and this repository deploys its own — a standard-library function that verifies
+the signature, pins the algorithm to the published key rather than to the
+token's header, requires `exp`, and requires **every** scope configured for the
+route.
+
+```hcl
+api_jwt_authorizers = {
+  workforce = {
+    cognito_user_pool_id = "us-east-1_ab12CD34e"
+    audience             = ["1example23456789abcdefghij"]
+  }
+}
+
+api_routes = {
+  list-orders = {
+    route_key          = "GET /orders"
+    integration_key    = "orders"
+    authorization_type = "JWT"
+    authorizer_key     = "workforce"
+  }
+}
+```
+
+Routes name an authorizer by key rather than by identifier, because an
+identifier only exists after an apply. A key that was never declared is refused
+at plan time, naming the route and the key.
+
+`scope_enforced_routes` reports which routes require their scopes in full, and
+`authorizers_with_cached_results` reports which decisions outlive the token that
+produced them. Both exist so the weaker reading is visible rather than assumed.
+See [`modules/authorizers/`](modules/authorizers/README.md) for the full
+contract.
 
 ## Validation
 
