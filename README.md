@@ -19,6 +19,10 @@ then returns a status code that does not name its cause:
 | CORS is configured and the backend also sets CORS headers | The backend's headers are discarded; the browser still refuses |
 | The integration takes longer than the API's own ceiling | `504` to the client while the work continues, and is billed |
 | A protected route lists the scopes a caller needs | Any **one** of them is enough; the list reads as a requirement and is enforced as alternatives |
+| Keys, a usage plan and attached clients all exist, and no method demands a key | Every request is served, counted against nothing, and missing from every usage report |
+| A throttle names a method path the API does not serve | The setting is stored, reads as though it applies, and limits nothing |
+| A method or integration changes without a new deployment | The console shows the change; the stage serves the old snapshot |
+| A managed rule group is evaluated in count mode | The ACL is present, its metrics move, and it has never refused a request |
 
 None of these produce a failed `terraform apply`. The purpose of this repository
 is to move as many of them as possible to plan time, and to make the rest
@@ -33,7 +37,8 @@ visible in a place an operator will actually look.
 | `variables.tf` | Root inputs |
 | `modules/http-api/` | HTTP API, routes, stage and access logging |
 | `modules/authorizers/` | JWT and Lambda request authorizers, and a scope-enforcing authorizer function |
-| `modules/rest-api/` | Usage plans, API keys and throttling (planned) |
+| `modules/rest-api/` | REST API, usage plans, API keys, throttling and the web ACL association |
+| `modules/waf/` | Regional web ACL, managed rule groups, rate limiting and logging |
 | `openapi/` | OpenAPI documents imported into the API (planned) |
 
 ## Getting started
@@ -149,6 +154,79 @@ at plan time, naming the route and the key.
 produced them. Both exist so the weaker reading is visible rather than assumed.
 See [`modules/authorizers/`](modules/authorizers/README.md) for the full
 contract.
+
+## Metered access and protection
+
+Three capabilities have no HTTP API form: **API keys**, **usage plans** and an
+**AWS WAF web ACL**. None of them is a setting that can be turned on later, so
+an API that has to tell its callers apart, cap them, or sit behind a firewall
+is a REST API from the beginning. That is why this repository deploys both
+kinds, and why `enable_rest_api` and `enable_waf` are off by default: neither
+is useful without integrations to point at, and a web ACL that is not attached
+to a stage is a running charge with no effect. `enable_waf` without
+`enable_rest_api` is refused at plan time for exactly that reason.
+
+```hcl
+enable_rest_api = true
+enable_waf      = true
+
+rest_api_methods = {
+  list-orders = {
+    path        = "/orders"
+    http_method = "GET"
+    integration = {
+      type = "AWS_PROXY"
+      uri  = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:orders/invocations"
+    }
+  }
+}
+
+rest_api_stage_throttle = {
+  rate_limit  = 500
+  burst_limit = 1000
+}
+
+rest_api_keys = {
+  partner-a = {}
+}
+
+rest_api_usage_plans = {
+  standard = {
+    api_keys = ["partner-a"]
+    throttle = { rate_limit = 50, burst_limit = 100 }
+    quota    = { limit = 1000000, period = "MONTH" }
+  }
+}
+
+waf_enforced_rule_groups        = ["known-bad-inputs"]
+waf_rate_limit_per_five_minutes = 3000
+```
+
+Two numbers in that example are counted differently, which is the commonest way
+a limit turns out not to be the limit anyone meant.
+
+**A usage plan limit is per API key.** One plan rated at 50 requests a second
+with twenty keys on it permits a thousand requests a second at the stage, and
+adding a twenty-first client raises it again with nothing reconfigured. Only
+`rest_api_stage_throttle` bounds the API as a whole;
+`plans_above_the_stage_throttle` and
+`total_plan_rate_if_every_key_is_at_its_limit` report the comparison. Both
+throttles and quotas are best-effort targets rather than guaranteed ceilings,
+by AWS's own description.
+
+**A WAF rate limit is per five-minute window.** `3000` above is about ten
+requests a second, not three thousand. The window is the service default and is
+not adjustable here, because the field that would adjust it does not exist
+across the whole provider range this repository pins.
+
+The web ACL ships **observing rather than blocking**: every managed rule group
+is evaluated in count mode until it is named in `waf_enforced_rule_groups`.
+A group dropped onto live traffic in blocking mode rejects real requests the
+first time one of its rules is wrong about one, and which rules are wrong about
+which requests is a property of the workload. `waf_rule_groups_not_enforcing`
+keeps "behind a WAF" and "can refuse a request" distinguishable. See
+[`modules/waf/`](modules/waf/README.md) and
+[`modules/rest-api/`](modules/rest-api/README.md).
 
 ## Validation
 

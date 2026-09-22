@@ -101,3 +101,81 @@ output "scope_enforcement_log_groups" {
   description = "Log group holding each bundled authorizer's decisions. A denial is recorded there with its reason; the caller is told only that it was denied."
   value       = module.authorizers.scope_enforcement_log_groups
 }
+
+# ---------------------------------------------------------------------------
+# Metered access
+# ---------------------------------------------------------------------------
+
+output "rest_api_id" {
+  description = "Identifier of the REST API, or null when it is not deployed."
+  value       = one(module.rest_api[*].rest_api_id)
+}
+
+output "rest_api_invoke_url" {
+  description = "Base URL of the REST API stage, or null when it is not deployed."
+  value       = one(module.rest_api[*].invoke_url)
+}
+
+output "rest_api_stage_arn" {
+  description = "ARN of the REST API stage. This is what a web ACL associates with."
+  value       = one(module.rest_api[*].stage_arn)
+}
+
+output "api_key_ids" {
+  description = "Identifiers of the API keys created. Values are not published here; they are already in state."
+  value       = one(module.rest_api[*].api_key_ids)
+}
+
+output "usage_plan_ids" {
+  description = "Identifiers of the usage plans created."
+  value       = one(module.rest_api[*].usage_plan_ids)
+}
+
+output "methods_not_requiring_an_api_key" {
+  description = "Methods served without a key while usage plans exist. Each is answered, metered against nothing, and absent from every usage report."
+  value       = one(module.rest_api[*].methods_not_requiring_an_api_key)
+}
+
+output "plans_above_the_stage_throttle" {
+  description = "Usage plans whose keys together may ask for more than the stage will serve."
+  value       = one(module.rest_api[*].plans_above_the_stage_throttle)
+}
+
+output "total_plan_rate_if_every_key_is_at_its_limit" {
+  description = "Requests a second the stage would receive if every key on every plan ran at its plan's rate. Compare it with the stage throttle."
+  value       = one(module.rest_api[*].total_plan_rate_if_every_key_is_at_its_limit)
+}
+
+# ---------------------------------------------------------------------------
+# Protection
+# ---------------------------------------------------------------------------
+
+output "web_acl_arn" {
+  description = "ARN of the regional web ACL, or null when it is not deployed."
+  value       = one(module.waf[*].web_acl_arn)
+}
+
+output "web_acl_capacity" {
+  description = "Capacity the web ACL consumes, in WCUs, as calculated by AWS WAF."
+  value       = one(module.waf[*].web_acl_capacity)
+}
+
+output "waf_rule_groups_not_enforcing" {
+  description = "Managed rule groups evaluated in count mode. Until this is empty the ACL observes and does not refuse."
+  value       = one(module.waf[*].rule_groups_not_enforcing)
+}
+
+output "waf_rule_groups_without_declared_capacity" {
+  description = "Managed rule groups left out of the capacity check because no capacity was declared for them."
+  value       = one(module.waf[*].rule_groups_without_declared_capacity)
+}
+
+output "waf_rules_shadowed_by_an_earlier_allow" {
+  description = "Rules that an address on the allow-list never reaches, including the managed rule groups."
+  value       = one(module.waf[*].rules_shadowed_by_an_earlier_allow)
+}
+
+output "waf_log_group_name" {
+  description = "Log group receiving matched-request records for the web ACL."
+  value       = one(module.waf[*].log_group_name)
+}

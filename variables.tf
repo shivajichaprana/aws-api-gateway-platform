@@ -234,3 +234,193 @@ variable "api_disable_default_endpoint" {
   type        = bool
   default     = false
 }
+
+# ---------------------------------------------------------------------------
+# REST API
+# ---------------------------------------------------------------------------
+
+variable "enable_rest_api" {
+  description = <<-EOT
+    Deploy the REST API alongside the HTTP API.
+
+    Off by default, and the reason it exists at all is that three things have
+    no HTTP API form: API keys, usage plans, and an AWS WAF web ACL. None is a
+    setting that can be turned on later. An API that has to tell its callers
+    apart, cap them, or sit behind a firewall is a REST API from the start.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "rest_api_name" {
+  description = "Name of the REST API."
+  type        = string
+  default     = "platform-rest-api"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,38}[a-z0-9]$", var.rest_api_name))
+    error_message = "rest_api_name must be 3-40 characters, lower-case alphanumeric and hyphens, starting with a letter and not ending in a hyphen."
+  }
+}
+
+variable "rest_api_description" {
+  description = "Description recorded on the REST API."
+  type        = string
+  default     = "REST API with metered access"
+}
+
+variable "rest_api_endpoint_type" {
+  description = "Where the REST API is served from. A web ACL attaches to the stage in every case, and has to be a regional one even for EDGE."
+  type        = string
+  default     = "REGIONAL"
+
+  validation {
+    condition     = contains(["REGIONAL", "EDGE", "PRIVATE"], var.rest_api_endpoint_type)
+    error_message = "rest_api_endpoint_type must be REGIONAL, EDGE or PRIVATE."
+  }
+}
+
+variable "rest_api_stage_name" {
+  description = "Stage serving the REST API. It appears in the invoke URL."
+  type        = string
+  default     = "live"
+
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9_-]{1,128}$", var.rest_api_stage_name))
+    error_message = "rest_api_stage_name must be 1-128 characters of letters, digits, underscores and hyphens."
+  }
+}
+
+variable "rest_api_methods" {
+  description = <<-EOT
+    Methods the REST API exposes. Empty by default, for the same reason the
+    HTTP API's routes are: every integration names something owned outside this
+    configuration. See modules/rest-api for the full contract.
+  EOT
+  type = map(object({
+    path                 = string
+    http_method          = string
+    authorization        = optional(string, "NONE")
+    authorizer_id        = optional(string)
+    authorization_scopes = optional(list(string), [])
+    api_key_required     = optional(bool)
+    request_parameters   = optional(map(bool), {})
+    integration = object({
+      type                    = string
+      uri                     = optional(string)
+      integration_http_method = optional(string, "POST")
+      connection_type         = optional(string, "INTERNET")
+      connection_id           = optional(string)
+      timeout_milliseconds    = optional(number, 29000)
+      request_parameters      = optional(map(string), {})
+      request_templates       = optional(map(string), {})
+    })
+  }))
+  default = {}
+}
+
+variable "rest_api_stage_throttle" {
+  description = "Aggregate throttle for the whole stage. Null leaves it at the account limit, which means the only limits in force are per key and therefore multiply by the number of clients."
+  type = object({
+    rate_limit  = number
+    burst_limit = number
+  })
+  default = null
+}
+
+variable "rest_api_method_throttles" {
+  description = "Aggregate per-method throttles for the stage, keyed by the same key used in rest_api_methods."
+  type = map(object({
+    rate_limit  = number
+    burst_limit = number
+  }))
+  default = {}
+}
+
+variable "rest_api_keys" {
+  description = "API keys to create. A key identifies a caller for metering; it authorizes nothing. Generated values are held in Terraform state."
+  type = map(object({
+    description = optional(string)
+    enabled     = optional(bool, true)
+  }))
+  default = {}
+}
+
+variable "rest_api_usage_plans" {
+  description = "Usage plans. Throttles and quotas inside a plan apply per API key and are best-effort targets rather than guaranteed ceilings."
+  type = map(object({
+    description = optional(string)
+    api_keys    = optional(list(string), [])
+    throttle = optional(object({
+      rate_limit  = number
+      burst_limit = number
+    }))
+    quota = optional(object({
+      limit  = number
+      period = string
+      offset = optional(number, 0)
+    }))
+    method_throttles = optional(map(object({
+      rate_limit  = number
+      burst_limit = number
+    })), {})
+  }))
+  default = {}
+}
+
+# ---------------------------------------------------------------------------
+# Web ACL
+# ---------------------------------------------------------------------------
+
+variable "enable_waf" {
+  description = <<-EOT
+    Create a regional web ACL and associate it with the REST API stage.
+
+    Off by default. A web ACL is a running charge and it can only protect a
+    REST API stage, so it is turned on together with one rather than alongside
+    an HTTP API it cannot reach.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "waf_name" {
+  description = "Name of the web ACL. Null derives one from name_prefix."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.waf_name == null || can(regex("^[a-z][a-z0-9-]{1,38}[a-z0-9]$", var.waf_name))
+    error_message = "waf_name must be 3-40 characters, lower-case alphanumeric and hyphens, starting with a letter and not ending in a hyphen."
+  }
+}
+
+variable "waf_enforced_rule_groups" {
+  description = "Managed rule groups permitted to block. Empty means every group is evaluated in count mode, which is what makes the first weeks of an ACL readable rather than an incident."
+  type        = set(string)
+  default     = []
+}
+
+variable "waf_rate_limit_per_five_minutes" {
+  description = "Requests one address may make in five minutes before the rate-based rule acts. Null disables the rule. The window is five minutes, not one second."
+  type        = number
+  default     = null
+}
+
+variable "waf_allowed_ip_addresses" {
+  description = "Addresses admitted ahead of every other rule, as IPv4 CIDRs. Anything listed here bypasses the managed rule groups as well."
+  type        = list(string)
+  default     = []
+}
+
+variable "waf_blocked_ip_addresses" {
+  description = "Addresses refused outright, as IPv4 CIDRs."
+  type        = list(string)
+  default     = []
+}
+
+variable "waf_capacity_budget" {
+  description = "Capacity, in WCUs, the web ACL is allowed to declare. The basic web ACL price covers 1500; above that is charged."
+  type        = number
+  default     = 1500
+}

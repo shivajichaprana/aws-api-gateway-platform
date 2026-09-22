@@ -14,6 +14,26 @@ locals {
   access_log_group_name = "/aws/apigateway/${var.api_name}/access"
   access_log_group_arn  = "arn:${local.partition}:logs:${var.aws_region}:${local.account_id}:log-group:${local.access_log_group_name}"
 
+  # The REST API and the web ACL derive their log group names the same way and
+  # from the same inputs, so the key can admit all three before any of them
+  # exists. AWS WAF refuses a logging destination whose name does not begin
+  # with aws-waf-logs-, which is why that one is not simply a path.
+  rest_api_log_group_name = "/aws/apigateway/${var.rest_api_name}/${var.rest_api_stage_name}/access"
+  rest_api_log_group_arn  = "arn:${local.partition}:logs:${var.aws_region}:${local.account_id}:log-group:${local.rest_api_log_group_name}"
+
+  waf_name           = coalesce(var.waf_name, "${var.name_prefix}-waf")
+  waf_log_group_name = "aws-waf-logs-${local.waf_name}"
+  waf_log_group_arn  = "arn:${local.partition}:logs:${var.aws_region}:${local.account_id}:log-group:${local.waf_log_group_name}"
+
+  # CloudWatch Logs narrows the grant by the encryption context of the group
+  # being written to, so every group that uses this key has to be named in the
+  # condition. A group left out is created and then fails on its first write.
+  encrypted_log_group_arns = concat(
+    [local.access_log_group_arn],
+    var.enable_rest_api ? [local.rest_api_log_group_arn] : [],
+    var.enable_waf ? [local.waf_log_group_arn] : [],
+  )
+
   create_key = var.create_kms_key && var.access_log_kms_key_arn == null
   key_arn    = var.access_log_kms_key_arn != null ? var.access_log_kms_key_arn : one(aws_kms_key.access_logs[*].arn)
 
@@ -96,7 +116,7 @@ data "aws_iam_policy_document" "access_logs_key" {
     condition {
       test     = "ArnEquals"
       variable = "kms:EncryptionContext:aws:logs:arn"
-      values   = [local.access_log_group_arn]
+      values   = local.encrypted_log_group_arns
     }
   }
 }
@@ -190,6 +210,72 @@ resource "terraform_data" "route_authorizer_names" {
         "These routes name an authorizer that is not declared in api_jwt_authorizers or api_lambda_authorizers: %s.",
         join(", ", local.routes_naming_an_undeclared_authorizer)
       )
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Metered access and protection
+# ---------------------------------------------------------------------------
+
+# The web ACL is created before the REST API takes its ARN, and nothing flows
+# back, so the two calls order themselves. A web ACL is regional and protects
+# resources in its own region only, which is why there is one provider here and
+# no alias: a CloudFront-scoped ACL would have to be created in us-east-1 and
+# could not be attached to a stage anyway.
+module "waf" {
+  count  = var.enable_waf ? 1 : 0
+  source = "./modules/waf"
+
+  name        = local.waf_name
+  description = "Regional web ACL protecting ${var.rest_api_name}"
+
+  enforced_rule_groups = var.waf_enforced_rule_groups
+  capacity_budget      = var.waf_capacity_budget
+
+  allowed_ip_addresses = var.waf_allowed_ip_addresses
+  blocked_ip_addresses = var.waf_blocked_ip_addresses
+
+  rate_limit_per_five_minutes = var.waf_rate_limit_per_five_minutes
+
+  log_retention_days = var.access_log_retention_days
+  log_kms_key_arn    = local.key_arn
+
+  tags = var.default_tags
+}
+
+module "rest_api" {
+  count  = var.enable_rest_api ? 1 : 0
+  source = "./modules/rest-api"
+
+  name          = var.rest_api_name
+  description   = var.rest_api_description
+  endpoint_type = var.rest_api_endpoint_type
+  stage_name    = var.rest_api_stage_name
+
+  methods          = var.rest_api_methods
+  stage_throttle   = var.rest_api_stage_throttle
+  method_throttles = var.rest_api_method_throttles
+
+  api_keys    = var.rest_api_keys
+  usage_plans = var.rest_api_usage_plans
+
+  access_log_retention_days = var.access_log_retention_days
+  access_log_kms_key_arn    = local.key_arn
+
+  web_acl_arn = var.enable_waf ? one(module.waf[*].web_acl_arn) : null
+
+  tags = var.default_tags
+}
+
+# A web ACL that protects nothing is a charge with no effect, and it is not
+# visibly different from one that is working: the console shows an ACL, rules
+# and metrics, and the metrics stay at zero because no request ever reaches it.
+resource "terraform_data" "waf_has_something_to_protect" {
+  lifecycle {
+    precondition {
+      condition     = !var.enable_waf || var.enable_rest_api
+      error_message = "enable_waf is set without enable_rest_api. A web ACL can only be associated with a REST API stage -- there is no HTTP API equivalent -- so this one would be created, charged for, and attached to nothing."
     }
   }
 }
