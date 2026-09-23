@@ -279,3 +279,197 @@ resource "terraform_data" "waf_has_something_to_protect" {
     }
   }
 }
+
+# ---------------------------------------------------------------------------
+# OpenAPI-driven API and its custom domain
+# ---------------------------------------------------------------------------
+
+locals {
+  # The document is rendered here rather than inside the module, so a placeholder
+  # it does not supply fails with the name of the placeholder at this line --
+  # and so the rendered document is one value that both the API and the checks
+  # below read.
+  #
+  # A missing function ARN renders a sentinel rather than an error, because a
+  # templatefile() failure on a null value reports the type it wanted and not
+  # what was missing. The guard further down refuses the sentinel by name.
+  openapi_orders_function_arn = coalesce(var.openapi_orders_function_arn, "function-arn-not-supplied")
+
+  openapi_body = templatefile("${path.module}/${var.openapi_document_path}", {
+    api_title                    = var.openapi_api_name
+    partition                    = local.partition
+    aws_region                   = var.aws_region
+    orders_function_arn          = local.openapi_orders_function_arn
+    integration_timeout_ms       = var.openapi_integration_timeout_ms
+    disable_execute_api_endpoint = var.openapi_disable_default_endpoint
+  })
+
+  openapi_function_name = (
+    var.openapi_orders_function_arn == null
+    ? null
+    : element(split(":", var.openapi_orders_function_arn), 6)
+  )
+
+  # -------------------------------------------------------------------
+  # Domain mappings
+  # -------------------------------------------------------------------
+  #
+  # Derived from which APIs exist and which kind the domain fronts, rather than
+  # taken as a list of ids. A mapping naming an API that was not created is
+  # accepted by the provider and refused by the service, after the domain is
+  # already there.
+  domain_fronts_rest = var.custom_domain_api_kind == "REST"
+  domain_fronts_http = var.custom_domain_api_kind == "HTTP"
+
+  custom_domain_mappings = merge(
+    var.enable_openapi_api && local.domain_fronts_rest ? {
+      openapi = {
+        api_id     = one(module.openapi_api[*].rest_api_id)
+        stage_name = var.openapi_stage_name
+        base_path  = var.custom_domain_openapi_base_path
+      }
+    } : {},
+    var.enable_rest_api && local.domain_fronts_rest ? {
+      metered = {
+        api_id     = one(module.rest_api[*].rest_api_id)
+        stage_name = var.rest_api_stage_name
+        base_path  = var.custom_domain_rest_base_path
+      }
+    } : {},
+    local.domain_fronts_http ? {
+      http = {
+        api_id     = module.http_api.api_id
+        stage_name = module.http_api.stage_name
+        base_path  = var.custom_domain_http_base_path
+      }
+    } : {},
+  )
+
+  mutual_tls_enabled = var.enable_custom_domain && var.custom_domain_mutual_tls != null
+
+  # Which generated endpoint the domain's own API still exposes. Mutual TLS makes
+  # a certificate mandatory at the domain and changes nothing about that URL, so
+  # the two have to be reasoned about together even though they are configured on
+  # different resources.
+  bypassable_default_endpoint = (
+    local.domain_fronts_http
+    ? !var.api_disable_default_endpoint
+    : (var.enable_openapi_api && !var.openapi_disable_default_endpoint)
+  )
+
+  mutual_tls_is_bypassable = local.mutual_tls_enabled && local.bypassable_default_endpoint
+
+  # An API whose generated endpoint is off and which no domain routes to has no
+  # way in at all. Every resource is correct and every call fails to connect.
+  openapi_unreachable = (
+    var.enable_openapi_api
+    && var.openapi_disable_default_endpoint
+    && !(var.enable_custom_domain && contains(keys(local.custom_domain_mappings), "openapi"))
+  )
+
+  # Mutual TLS needs a regional domain, and a regional domain can only front a
+  # regional API. An edge-optimized API mapped to one is refused by the service.
+  openapi_endpoint_type_matches_domain = (
+    !var.enable_custom_domain
+    || !contains(keys(local.custom_domain_mappings), "openapi")
+    || var.custom_domain_endpoint_type != "REGIONAL"
+    || var.openapi_endpoint_type == "REGIONAL"
+  )
+}
+
+module "openapi_api" {
+  count  = var.enable_openapi_api ? 1 : 0
+  source = "./modules/openapi-api"
+
+  name        = var.openapi_api_name
+  description = "REST API deployed from ${var.openapi_document_path}"
+
+  openapi_body      = local.openapi_body
+  put_rest_api_mode = var.openapi_put_rest_api_mode
+
+  endpoint_type            = var.openapi_endpoint_type
+  stage_name               = var.openapi_stage_name
+  disable_default_endpoint = var.openapi_disable_default_endpoint
+
+  # The grant the import does not create. The module cross-checks this against
+  # the integration URIs in the document and reports any function the document
+  # calls that nothing here grants.
+  lambda_integrations = local.openapi_function_name == null ? {} : {
+    orders = {
+      function_name = local.openapi_function_name
+    }
+  }
+
+  stage_throttle = var.openapi_stage_throttle
+
+  access_log_retention_days = var.access_log_retention_days
+  access_log_kms_key_arn    = local.key_arn
+
+  tags = var.default_tags
+}
+
+module "custom_domain" {
+  count  = var.enable_custom_domain ? 1 : 0
+  source = "./modules/custom-domain"
+
+  domain_name = var.custom_domain_name
+  api_kind    = var.custom_domain_api_kind
+
+  certificate_arn                        = var.custom_domain_certificate_arn
+  certificate_is_imported_or_private_ca  = var.custom_domain_certificate_is_imported_or_private_ca
+  ownership_verification_certificate_arn = var.custom_domain_ownership_verification_certificate_arn
+
+  rest_endpoint_type = var.custom_domain_endpoint_type
+  security_policy    = var.custom_domain_security_policy
+
+  mutual_tls               = var.custom_domain_mutual_tls
+  create_truststore_bucket = var.custom_domain_create_truststore_bucket
+
+  api_mappings   = local.custom_domain_mappings
+  hosted_zone_id = var.custom_domain_hosted_zone_id
+
+  tags = var.default_tags
+}
+
+# The checks that span the API and the domain. They sit on a node of their own
+# for the same reason as everywhere else in this repository: a precondition
+# becomes part of its resource's dependencies, and these read values that the
+# modules above produce.
+resource "terraform_data" "api_and_domain" {
+  lifecycle {
+    precondition {
+      condition     = !var.enable_openapi_api || var.openapi_orders_function_arn != null
+      error_message = "enable_openapi_api is set and openapi_orders_function_arn is null. The document integrates every order path with that function, so the API would import cleanly and answer 500 on every call."
+    }
+
+    precondition {
+      condition     = !var.enable_custom_domain || var.custom_domain_name != null
+      error_message = "enable_custom_domain is set without custom_domain_name."
+    }
+
+    precondition {
+      condition     = !var.enable_custom_domain || var.custom_domain_certificate_arn != null
+      error_message = "enable_custom_domain is set without custom_domain_certificate_arn. A custom domain terminates TLS, so it cannot be created without a certificate for the name it serves."
+    }
+
+    precondition {
+      condition     = !var.enable_custom_domain || length(local.custom_domain_mappings) > 0
+      error_message = "The custom domain would front no API. Check custom_domain_api_kind against which APIs are enabled: a REST domain maps the OpenAPI-driven and metered APIs, an HTTP domain maps the HTTP API. A domain with no mappings resolves, terminates TLS, and answers 404 for every path."
+    }
+
+    precondition {
+      condition     = !local.mutual_tls_is_bypassable || var.allow_default_endpoint_with_mutual_tls
+      error_message = "Mutual TLS is configured on the domain and the API's generated execute-api endpoint still answers. That endpoint asks for no client certificate, so every caller that keeps the generated URL keeps working without one -- and the domain, the truststore and the certificate all check out. Disable the API's default endpoint, or set allow_default_endpoint_with_mutual_tls for a migration window you intend to close."
+    }
+
+    precondition {
+      condition     = !local.openapi_unreachable
+      error_message = "The OpenAPI-driven API has its generated endpoint disabled and no custom domain mapping it. Every resource is correct and there is no way to call it."
+    }
+
+    precondition {
+      condition     = local.openapi_endpoint_type_matches_domain
+      error_message = "The OpenAPI-driven API is mapped to a regional custom domain and is not itself regional. A regional domain can only front a regional API; the mapping is refused by the service after the domain exists."
+    }
+  }
+}

@@ -1,0 +1,295 @@
+# An OpenAPI document that IS the API rather than a description of one.
+#
+# API Gateway imports this file and builds every resource, method, integration
+# and response from it. Nothing in Terraform declares a path: the paths below
+# are the paths that exist, and an operation removed from here is removed from
+# the API on the next apply.
+#
+# Three conventions make that safe, and all three are enforced rather than
+# trusted -- see openapi/README.md and the importing module's own guards.
+#
+#   1. Every operation carries x-amazon-apigateway-integration. An operation
+#      without one is imported as a method with nothing behind it, which
+#      answers 500 with nothing in the response naming the cause.
+#
+#   2. Every operation declares its authorization. One that declares none
+#      inherits the document-level `security` block at the foot of this file;
+#      one that overrides it with an empty list is open, which is right for a
+#      liveness probe and wrong everywhere else, so it is reported by name.
+#
+#   3. Placeholders are Terraform template variables, not API Gateway mapping
+#      expressions. `$${...}` is substituted before this document reaches AWS, so
+#      a stage variable or a VTL expression written that way would be replaced
+#      with a Terraform value or fail the render outright. API Gateway's own
+#      `$context.` and `$input.` references carry no brace and pass through
+#      untouched, which is why they are safe to use below.
+
+openapi: "3.0.1"
+
+info:
+  title: ${api_title}
+  description: >-
+    Order lifecycle operations. Every path is served by one function through a
+    proxy integration, so the routing here is the API's contract and the
+    function owns the behaviour behind it.
+  version: "1.0.0"
+
+# The default endpoint setting is stated in the document as well as on the
+# resource.
+#
+# Importing in overwrite mode makes this document authoritative for the literal
+# properties of the API, and the provider reconciles afterwards only the subset
+# of those properties that the Terraform configuration also sets. Stating it
+# twice costs a line; getting it wrong leaves a second, uncertificated way in.
+x-amazon-apigateway-endpoint-configuration:
+  disableExecuteApiEndpoint: ${disable_execute_api_endpoint}
+
+# Validation happens at the edge, before the integration is invoked and so
+# before anything is billed for the call. A validator declared here and never
+# referenced validates nothing, which is why each operation names one.
+x-amazon-apigateway-request-validators:
+  params-and-body:
+    validateRequestBody: true
+    validateRequestParameters: true
+  params-only:
+    validateRequestBody: false
+    validateRequestParameters: true
+
+x-amazon-apigateway-request-validator: params-and-body
+
+# A gateway response is what a caller sees when the request never reaches an
+# integration at all -- a rejected credential, a body the validator refused, a
+# throttled call. The default text names no reason, so these add one.
+x-amazon-apigateway-gateway-responses:
+  BAD_REQUEST_BODY:
+    statusCode: 400
+    responseTemplates:
+      application/json: '{"message":"The request body did not match the schema for this operation.","detail":"$context.error.validationErrorString","requestId":"$context.requestId"}'
+  UNAUTHORIZED:
+    statusCode: 401
+    responseTemplates:
+      application/json: '{"message":"The request carried no usable credentials.","requestId":"$context.requestId"}'
+  ACCESS_DENIED:
+    statusCode: 403
+    responseTemplates:
+      application/json: '{"message":"The caller is not permitted to invoke this operation.","detail":"$context.authorizer.error","requestId":"$context.requestId"}'
+  THROTTLED:
+    statusCode: 429
+    responseTemplates:
+      application/json: '{"message":"Rate or quota exceeded for this caller.","requestId":"$context.requestId"}'
+
+paths:
+  /orders:
+    get:
+      summary: List orders
+      operationId: listOrders
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [PENDING, SETTLED, CANCELLED]
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: A page of orders.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderPage"
+        "400":
+          description: The query parameters were not usable.
+      # A parameter declared above is only ENFORCED while a validator is
+      # attached. Without one it is documentation: a request omitting a required
+      # parameter reaches the integration, which sees it as absent.
+      x-amazon-apigateway-request-validator: params-only
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        # A proxy integration is always invoked with POST, whatever method the
+        # caller used. This is the integration's request to Lambda rather than
+        # the caller's request, and setting it to GET answers 500 every time.
+        httpMethod: POST
+        uri: arn:${partition}:apigateway:${aws_region}:lambda:path/2015-03-31/functions/${orders_function_arn}/invocations
+        passthroughBehavior: when_no_match
+        timeoutInMillis: ${integration_timeout_ms}
+
+    post:
+      summary: Place an order
+      operationId: placeOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewOrder"
+      responses:
+        "201":
+          description: The order was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: The body did not match the schema.
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        uri: arn:${partition}:apigateway:${aws_region}:lambda:path/2015-03-31/functions/${orders_function_arn}/invocations
+        passthroughBehavior: when_no_match
+        timeoutInMillis: ${integration_timeout_ms}
+
+  /orders/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9-]{1,64}$"
+    get:
+      summary: Read one order
+      operationId: getOrder
+      responses:
+        "200":
+          description: The order.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "404":
+          description: No such order.
+      x-amazon-apigateway-request-validator: params-only
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        uri: arn:${partition}:apigateway:${aws_region}:lambda:path/2015-03-31/functions/${orders_function_arn}/invocations
+        passthroughBehavior: when_no_match
+        timeoutInMillis: ${integration_timeout_ms}
+        # The two sides are spelled the same here on purpose. The integration's
+        # parameter name and the method's are separate strings, and a mismatch
+        # is accepted at import and arrives at the function as an absent value.
+        requestParameters:
+          integration.request.path.orderId: method.request.path.orderId
+
+    delete:
+      summary: Cancel an order
+      operationId: cancelOrder
+      responses:
+        "204":
+          description: The order was cancelled.
+        "404":
+          description: No such order.
+      x-amazon-apigateway-request-validator: params-only
+      x-amazon-apigateway-integration:
+        type: aws_proxy
+        httpMethod: POST
+        uri: arn:${partition}:apigateway:${aws_region}:lambda:path/2015-03-31/functions/${orders_function_arn}/invocations
+        passthroughBehavior: when_no_match
+        timeoutInMillis: ${integration_timeout_ms}
+        requestParameters:
+          integration.request.path.orderId: method.request.path.orderId
+
+  /health:
+    get:
+      summary: Liveness probe
+      operationId: health
+      # Deliberately open, and deliberately visible: this operation overrides
+      # the document-level requirement with an empty list, which the importing
+      # module reports by name rather than accepting silently. A probe that
+      # needs a credential stops working when the credential rotates.
+      security: []
+      responses:
+        "200":
+          description: The API is serving.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+      # A mock integration answers without a backend, so this reports whether
+      # API Gateway is serving the stage rather than whether the function behind
+      # it is healthy. That is the narrower claim, and it is the honest one for
+      # a probe that is reachable without credentials.
+      x-amazon-apigateway-integration:
+        type: mock
+        requestTemplates:
+          application/json: '{"statusCode": 200}'
+        responses:
+          default:
+            statusCode: "200"
+            responseTemplates:
+              application/json: '{"status":"ok","stage":"$context.stage"}'
+
+# Signature Version 4 over the whole document, so an operation that says nothing
+# about authorization requires a signed request rather than requiring nothing.
+security:
+  - sigv4: []
+
+components:
+  securitySchemes:
+    sigv4:
+      type: apiKey
+      name: Authorization
+      in: header
+      x-amazon-apigateway-authtype: awsSigv4
+
+  schemas:
+    NewOrder:
+      type: object
+      required: [sku, quantity]
+      additionalProperties: false
+      properties:
+        sku:
+          type: string
+          minLength: 1
+          maxLength: 64
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        note:
+          type: string
+          maxLength: 512
+
+    Order:
+      type: object
+      required: [orderId, sku, quantity, status]
+      properties:
+        orderId:
+          type: string
+        sku:
+          type: string
+        quantity:
+          type: integer
+        status:
+          type: string
+          enum: [PENDING, SETTLED, CANCELLED]
+        placedAt:
+          type: string
+          format: date-time
+
+    OrderPage:
+      type: object
+      required: [orders]
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+        nextToken:
+          type: string
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+        stage:
+          type: string

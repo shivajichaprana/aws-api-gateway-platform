@@ -424,3 +424,266 @@ variable "waf_capacity_budget" {
   type        = number
   default     = 1500
 }
+
+# ---------------------------------------------------------------------------
+# OpenAPI-driven API
+# ---------------------------------------------------------------------------
+
+variable "enable_openapi_api" {
+  description = <<-EOT
+    Whether the OpenAPI-driven REST API is created.
+
+    Off by default, because the document integrates with a function this
+    configuration does not create: enabling it without naming one would build an
+    API whose every path answers 500. The same call as enable_proxy and
+    enable_rest_api elsewhere -- a capability that needs a value only the caller
+    has is declared off rather than given an invented default.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "openapi_api_name" {
+  description = "Name of the OpenAPI-driven API. Also the title rendered into the document, so the two cannot disagree."
+  type        = string
+  default     = "orders"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{2,54}$", var.openapi_api_name))
+    error_message = "openapi_api_name must be lower-case alphanumeric with hyphens, start with a letter, and be 3-55 characters."
+  }
+}
+
+variable "openapi_document_path" {
+  description = "Path to the OpenAPI document, relative to the root module. It is rendered with templatefile, so a placeholder it does not supply fails here by name."
+  type        = string
+  default     = "openapi/orders-api.yaml"
+}
+
+variable "openapi_orders_function_arn" {
+  description = <<-EOT
+    ARN of the function serving the order paths in the document.
+
+    Required when enable_openapi_api is set, and checked rather than defaulted:
+    a placeholder ARN renders into the integration URI, imports without
+    complaint, and answers 500 on every call.
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.openapi_orders_function_arn == null || can(regex("^arn:aws[a-z-]*:lambda:[a-z0-9-]+:[0-9]{12}:function:[A-Za-z0-9-_]+(:(\\$LATEST|[A-Za-z0-9-_]+))?$", var.openapi_orders_function_arn))
+    error_message = "openapi_orders_function_arn must be a Lambda function ARN, optionally qualified with a version or alias."
+  }
+}
+
+variable "openapi_stage_name" {
+  description = "Stage the imported document is served at."
+  type        = string
+  default     = "v1"
+}
+
+variable "openapi_endpoint_type" {
+  description = "Endpoint type for the OpenAPI-driven API. Regional is a prerequisite for a regional custom domain, which is the only kind that can carry mutual TLS."
+  type        = string
+  default     = "REGIONAL"
+
+  validation {
+    condition     = contains(["REGIONAL", "EDGE", "PRIVATE"], var.openapi_endpoint_type)
+    error_message = "openapi_endpoint_type must be REGIONAL, EDGE or PRIVATE."
+  }
+}
+
+variable "openapi_integration_timeout_ms" {
+  description = <<-EOT
+    Integration timeout rendered into the document, in milliseconds.
+
+    Capped at 29000 because that is the REST API ceiling. A backend allowed
+    longer than the gateway will wait answers the client 504 while its own work
+    continues -- and is billed -- so a retry duplicates it.
+  EOT
+  type        = number
+  default     = 29000
+
+  validation {
+    condition     = var.openapi_integration_timeout_ms >= 50 && var.openapi_integration_timeout_ms <= 29000
+    error_message = "openapi_integration_timeout_ms must be between 50 and 29000. The service applies no client-side check, so a larger value is accepted and then ignored in favour of the ceiling."
+  }
+}
+
+variable "openapi_put_rest_api_mode" {
+  description = "overwrite makes the document authoritative; merge leaves operations deleted from it serving. See modules/openapi-api/README.md."
+  type        = string
+  default     = "overwrite"
+
+  validation {
+    condition     = contains(["overwrite", "merge"], var.openapi_put_rest_api_mode)
+    error_message = "openapi_put_rest_api_mode must be overwrite or merge."
+  }
+}
+
+variable "openapi_disable_default_endpoint" {
+  description = <<-EOT
+    Whether the generated execute-api endpoint for the OpenAPI-driven API stops
+    answering.
+
+    Off by default so the API is reachable before a domain exists. Required on
+    once mutual TLS is in force, because that endpoint asks for no certificate
+    and turning mutual TLS on does not change it.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "openapi_stage_throttle" {
+  description = "Stage-wide rate and burst ceiling for the OpenAPI-driven API."
+  type = object({
+    rate_limit  = number
+    burst_limit = number
+  })
+  default = null
+}
+
+# ---------------------------------------------------------------------------
+# Custom domain and mutual TLS
+# ---------------------------------------------------------------------------
+
+variable "enable_custom_domain" {
+  description = "Whether a custom domain name is created. Mutual TLS is only available on one, so it is also the switch that makes client certificates possible."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domain_name" {
+  description = "Fully qualified domain name clients call."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.custom_domain_name == null || can(regex("^(\\*\\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}$", var.custom_domain_name))
+    error_message = "custom_domain_name must be a lower-case fully qualified domain name."
+  }
+}
+
+variable "custom_domain_api_kind" {
+  description = <<-EOT
+    Which kind of API the domain fronts: REST or HTTP.
+
+    A domain fronts one. A base path mapping and an API mapping are different
+    resources in different services, so a domain carrying both would have two
+    things believing they own it.
+  EOT
+  type        = string
+  default     = "REST"
+
+  validation {
+    condition     = contains(["REST", "HTTP"], var.custom_domain_api_kind)
+    error_message = "custom_domain_api_kind must be REST or HTTP."
+  }
+}
+
+variable "custom_domain_certificate_arn" {
+  description = "ACM certificate for the domain, issued in this region."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.custom_domain_certificate_arn == null || can(regex("^arn:aws[a-z-]*:acm:[a-z0-9-]+:[0-9]{12}:certificate/", var.custom_domain_certificate_arn))
+    error_message = "custom_domain_certificate_arn must be an ACM certificate ARN."
+  }
+}
+
+variable "custom_domain_certificate_is_imported_or_private_ca" {
+  description = "Whether that certificate was imported into ACM or issued by a private CA. Mutual TLS with either needs a separate ownership verification certificate."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domain_ownership_verification_certificate_arn" {
+  description = "ACM certificate proving domain ownership. It must stay valid for the life of the domain: if it expires, every update to the domain is locked, including a truststore rotation."
+  type        = string
+  default     = null
+}
+
+variable "custom_domain_endpoint_type" {
+  description = "Endpoint type for a REST domain. Mutual TLS requires REGIONAL."
+  type        = string
+  default     = "REGIONAL"
+
+  validation {
+    condition     = contains(["REGIONAL", "EDGE"], var.custom_domain_endpoint_type)
+    error_message = "custom_domain_endpoint_type must be REGIONAL or EDGE."
+  }
+}
+
+variable "custom_domain_security_policy" {
+  description = "Minimum TLS version the domain negotiates. Always stated, because a REST domain left silent takes whatever the service chose."
+  type        = string
+  default     = "TLS_1_2"
+
+  validation {
+    condition     = contains(["TLS_1_0", "TLS_1_2"], var.custom_domain_security_policy)
+    error_message = "custom_domain_security_policy must be TLS_1_0 or TLS_1_2."
+  }
+}
+
+variable "custom_domain_mutual_tls" {
+  description = <<-EOT
+    Client certificate requirement for the domain. Null leaves it off.
+
+    truststore_version is required. The provider sends it only when this value
+    changes, so replacing the bundle in S3 and leaving this alone updates
+    nothing: the old truststore stays in force while the apply reports no
+    changes and the bucket shows the new file.
+  EOT
+  type = object({
+    truststore_bucket  = string
+    truststore_key     = string
+    truststore_version = string
+  })
+  default = null
+}
+
+variable "custom_domain_create_truststore_bucket" {
+  description = "Whether the truststore bucket is created here, with versioning on. An object version is what a truststore rotation is, so a bucket without versioning has none to name."
+  type        = bool
+  default     = false
+}
+
+variable "custom_domain_openapi_base_path" {
+  description = "Base path the OpenAPI-driven API is served at under the domain. Empty serves it at the root, and only one API may."
+  type        = string
+  default     = "orders"
+}
+
+variable "custom_domain_rest_base_path" {
+  description = "Base path the metered REST API is served at under the domain."
+  type        = string
+  default     = "metered"
+}
+
+variable "custom_domain_http_base_path" {
+  description = "Base path the HTTP API is served at under the domain. Empty serves it at the root."
+  type        = string
+  default     = ""
+}
+
+variable "custom_domain_hosted_zone_id" {
+  description = "Route 53 zone the alias records are created in. Null creates none, and the domain then resolves nowhere."
+  type        = string
+  default     = null
+}
+
+variable "allow_default_endpoint_with_mutual_tls" {
+  description = <<-EOT
+    Permits mutual TLS alongside a generated endpoint that still answers.
+
+    Off by default, and off is the honest setting: that endpoint requires no
+    client certificate, so while it answers the certificate requirement is
+    optional in practice and every check of the domain still passes. On is a
+    migration window for callers who have not moved to the domain yet, and it is
+    reported for as long as it lasts.
+  EOT
+  type        = bool
+  default     = false
+}

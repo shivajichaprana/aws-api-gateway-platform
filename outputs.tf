@@ -179,3 +179,116 @@ output "waf_log_group_name" {
   description = "Log group receiving matched-request records for the web ACL."
   value       = one(module.waf[*].log_group_name)
 }
+
+# ---------------------------------------------------------------------------
+# OpenAPI-driven API
+# ---------------------------------------------------------------------------
+
+output "openapi_api_id" {
+  description = "Identifier of the OpenAPI-driven REST API."
+  value       = one(module.openapi_api[*].rest_api_id)
+}
+
+output "openapi_stage_arn" {
+  description = "Stage ARN of the OpenAPI-driven API. A web ACL association and a base path mapping both take it."
+  value       = one(module.openapi_api[*].stage_arn)
+}
+
+output "openapi_invoke_url" {
+  description = "Generated execute-api URL for the OpenAPI-driven API. It stops answering once the default endpoint is disabled."
+  value       = one(module.openapi_api[*].invoke_url)
+}
+
+output "openapi_operations" {
+  description = "Every operation the document declares, read back out of the document that built the API."
+  value       = one(module.openapi_api[*].operations)
+}
+
+output "openapi_document_sha1" {
+  description = "Hash of the rendered document behind the current deployment."
+  value       = one(module.openapi_api[*].document_sha1)
+}
+
+output "openapi_operations_declaring_no_authorization" {
+  description = "Operations reachable without credentials. An open liveness probe is deliberate; an open write path looks identical in the document."
+  value       = one(module.openapi_api[*].operations_declaring_no_authorization)
+}
+
+output "openapi_functions_without_an_invocation_grant" {
+  description = "Functions the document integrates with that this configuration did not grant. Each one answers 500 with nothing in the response about permissions."
+  value       = one(module.openapi_api[*].functions_without_an_invocation_grant)
+}
+
+output "openapi_operations_removed_from_the_document_are_left_in_place" {
+  description = "True in merge mode, where an operation deleted from the document keeps serving."
+  value       = one(module.openapi_api[*].operations_removed_from_the_document_are_left_in_place)
+}
+
+output "openapi_unreferenced_request_validators" {
+  description = "Validators the document declares and nothing points at. Each validates nothing while its parameters stay in the document."
+  value       = one(module.openapi_api[*].unreferenced_request_validators)
+}
+
+output "openapi_access_log_group_name" {
+  description = "Log group receiving access logs for the OpenAPI-driven API."
+  value       = one(module.openapi_api[*].access_log_group_name)
+}
+
+# ---------------------------------------------------------------------------
+# Custom domain and mutual TLS
+# ---------------------------------------------------------------------------
+
+output "custom_domain_name" {
+  description = "The custom domain name clients call."
+  value       = one(module.custom_domain[*].domain_name)
+}
+
+output "custom_domain_invoke_urls" {
+  description = "URL each mapped API is reachable at through the domain."
+  value       = one(module.custom_domain[*].invoke_urls)
+}
+
+output "custom_domain_alias_target" {
+  description = "Alias target for the domain, for a DNS record created outside this configuration."
+  value       = one(module.custom_domain[*].alias_target)
+}
+
+output "custom_domain_security_policy" {
+  description = "Minimum TLS version the domain negotiates."
+  value       = one(module.custom_domain[*].security_policy)
+}
+
+output "mutual_tls_enabled" {
+  description = "Whether a client certificate is required at the domain."
+  value       = local.mutual_tls_enabled
+}
+
+output "mutual_tls_truststore_version" {
+  description = "Truststore version actually in force -- not whatever is newest at that key. Changing this value is what rotates the truststore."
+  value       = one(module.custom_domain[*].truststore_version)
+}
+
+output "mutual_tls_is_bypassable" {
+  description = <<-EOT
+    True when mutual TLS is in force and the API's generated execute-api endpoint
+    still answers. The certificate requirement is then optional in practice, and
+    the domain, the truststore and the certificate all still check out. Reaching
+    this state requires allow_default_endpoint_with_mutual_tls.
+  EOT
+  value       = local.mutual_tls_is_bypassable
+}
+
+output "mutual_tls_does_not_check_revocation" {
+  description = "Always true. A revoked but unexpired client certificate is accepted; checking revocation means a Lambda authorizer, which receives the certificate the client presented."
+  value       = one(module.custom_domain[*].certificate_revocation_not_checked)
+}
+
+output "mutual_tls_truststore_expiry_not_notified" {
+  description = "Always true. Certificate warnings are produced when the domain is created or updated and at no other time, so rotating the truststore is also the only occasion on which it is inspected."
+  value       = one(module.custom_domain[*].truststore_certificate_expiry_not_notified)
+}
+
+output "custom_domain_route53_records_not_created" {
+  description = "True when no hosted zone was supplied. The domain then resolves nowhere, which fails in DNS rather than in API Gateway."
+  value       = one(module.custom_domain[*].route53_records_not_created)
+}

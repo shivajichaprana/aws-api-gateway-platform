@@ -1,8 +1,9 @@
 # aws-api-gateway-platform
 
 Terraform for putting an API in front of a workload on AWS: HTTP APIs with
-routes and stages, authorizers, usage plans and throttling, WAF protection, and
-an OpenAPI-driven deployment path with a custom domain.
+routes and stages, authorizers, usage plans and throttling, WAF protection, an
+OpenAPI-driven deployment path, and a custom domain that can require client
+certificates.
 
 ## Why this needs a platform rather than a resource
 
@@ -23,6 +24,11 @@ then returns a status code that does not name its cause:
 | A throttle names a method path the API does not serve | The setting is stored, reads as though it applies, and limits nothing |
 | A method or integration changes without a new deployment | The console shows the change; the stage serves the old snapshot |
 | A managed rule group is evaluated in count mode | The ACL is present, its metrics move, and it has never refused a request |
+| An imported document has an operation API Gateway could not parse | The import succeeds without it; the route is simply not there |
+| An imported operation carries no integration | `{"message":"Internal Server Error"}`, the same as a handler that threw |
+| Mutual TLS is on and the generated `execute-api` endpoint still answers | Callers keep working with no certificate; the domain and truststore both check out |
+| A new truststore bundle is uploaded to the same S3 key | `apply` reports no changes and the old truststore stays in force; a removed CA is still trusted |
+| A certificate in the truststore expires | Nothing reports it, ever |
 
 None of these produce a failed `terraform apply`. The purpose of this repository
 is to move as many of them as possible to plan time, and to make the rest
@@ -39,7 +45,9 @@ visible in a place an operator will actually look.
 | `modules/authorizers/` | JWT and Lambda request authorizers, and a scope-enforcing authorizer function |
 | `modules/rest-api/` | REST API, usage plans, API keys, throttling and the web ACL association |
 | `modules/waf/` | Regional web ACL, managed rule groups, rate limiting and logging |
-| `openapi/` | OpenAPI documents imported into the API (planned) |
+| `modules/openapi-api/` | REST API built from an imported OpenAPI document |
+| `modules/custom-domain/` | Custom domain name, mutual TLS, base path mappings and DNS |
+| `openapi/` | OpenAPI documents imported into the API |
 
 ## Getting started
 
@@ -228,6 +236,63 @@ keeps "behind a WAF" and "can refuse a request" distinguishable. See
 [`modules/waf/`](modules/waf/README.md) and
 [`modules/rest-api/`](modules/rest-api/README.md).
 
+## Specification-driven deployment
+
+An API can be built two ways here and it has to be one or the other.
+[`modules/rest-api/`](modules/rest-api/README.md) declares methods in Terraform
+and builds the resource tree from them.
+[`modules/openapi-api/`](modules/openapi-api/README.md) hands API Gateway an
+OpenAPI document and lets it build the tree. Mixing them means two things
+believe they own the same resources, so each apply removes what the other
+created and the API alternates between two shapes with no error from either.
+
+Importing makes one word load-bearing. `fail_on_warnings` defaults to **false**
+in the service: a document with an unrecognised extension key, an unresolvable
+`$ref` or an integration API Gateway cannot parse is imported anyway, minus the
+parts it could not understand. The apply succeeds and the operation is not there.
+The module defaults it to true and refuses, before the import runs, a document
+with an operation carrying no integration, a validator reference naming no
+validator, or a placeholder that survived the render.
+
+The document is also where the invocation grants come from. Every integration URI
+of the form `functions/<arn>/invocations` is read out of it and compared against
+what was granted, so a function the document calls and nothing permits is named
+in an output rather than discovered from a `500`. Creating an integration in the
+console attaches that grant as a side effect; an import does not.
+
+## Client certificates
+
+Mutual TLS is not a setting on an API. It belongs to the custom domain clients
+reach the API through, which puts it in
+[`modules/custom-domain/`](modules/custom-domain/README.md) and ties it to two
+conditions that are easy to satisfy separately and to miss together.
+
+**The domain must be regional**, because an edge-optimized domain terminates TLS
+in a CloudFront distribution API Gateway owns and that cannot ask a client for a
+certificate. **The API's generated endpoint must stop answering**, because it
+requires no certificate and enabling mutual TLS does not change it — so anything
+still holding that URL keeps working while the domain, the truststore and the
+certificate all check out. The root configuration refuses that pair unless
+`allow_default_endpoint_with_mutual_tls` is set for a migration window, and
+reports it for as long as it lasts.
+
+`truststore_version` is a required input, which the service treats as optional.
+The provider sends the version only when the configured value changes, so
+uploading a new bundle to the same key updates nothing: the domain keeps
+validating against the version it was last given, `apply` reports no changes, and
+a certificate authority removed from the bundle is still trusted. That call is
+also the only time the truststore is inspected at all — API Gateway reports
+certificate warnings when a domain is created or updated and never notifies when
+a certificate already in it expires.
+
+Four things mutual TLS does not do, each with an output that says so: it does not
+check revocation, it does not warn about expiry inside the truststore, it does
+not distinguish untrusted from expired from unsupported-algorithm in the `403` it
+returns, and it is unavailable on a private API. Revocation checking is a Lambda
+authorizer's job — it receives the certificate the client presented — which is
+why `modules/openapi-api/` writes the certificate's subject, issuer, serial and
+expiry into the access log and deliberately never writes the certificate itself.
+
 ## Validation
 
 No pipeline runs in this repository yet. Until one does, changes are checked
@@ -249,6 +314,9 @@ module's own preconditions.
   documentation values. Nothing here is written against a real account.
 - **Least privilege by construction.** Invocation grants name the route that
   uses them, not the API as a whole.
+- **One source of truth per API.** Routing comes either from a document or from
+  Terraform, never from both, and where a document and a resource state the same
+  property they are required to agree rather than resolved by ordering.
 
 ## License
 
