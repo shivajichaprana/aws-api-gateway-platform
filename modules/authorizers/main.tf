@@ -119,6 +119,19 @@ data "archive_file" "scope_enforcer" {
   # reference gets the function along with the configuration that deploys it.
   source_dir  = "${path.module}/function"
   output_path = "${path.module}/.terraform-build/${var.name_prefix}-${each.key}-authorizer.zip"
+
+  # The archive is built from the directory on disk, not from what is tracked
+  # in git -- so .gitignore hides compiled bytecode from review without hiding
+  # it from the package. Anything that imports this file locally, a syntax
+  # check or the test suite included, leaves a __pycache__ behind, and the next
+  # apply from that checkout uploads it.
+  #
+  # The name is exact on purpose. This provider compares an exclusion against
+  # the relative path with string equality and does no globbing at all, so
+  # "*.pyc" is accepted, matches nothing, and reads as though it were applied.
+  # A directory that matches is skipped whole, which is why naming the
+  # directory covers every file beneath it.
+  excludes = ["__pycache__"]
 }
 
 data "aws_iam_policy_document" "scope_enforcer_assume" {
