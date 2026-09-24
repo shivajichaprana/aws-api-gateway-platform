@@ -124,7 +124,7 @@ variable "minimum_compression_size" {
   default     = null
 
   validation {
-    condition     = var.minimum_compression_size == null || (var.minimum_compression_size >= 0 && var.minimum_compression_size <= 10485760)
+    condition     = var.minimum_compression_size == null ? true : (var.minimum_compression_size >= 0 && var.minimum_compression_size <= 10485760)
     error_message = "minimum_compression_size must be between 0 and 10485760 bytes."
   }
 }
@@ -192,7 +192,7 @@ variable "stage_throttle" {
   default = null
 
   validation {
-    condition     = var.stage_throttle == null || (var.stage_throttle.rate_limit > 0 && var.stage_throttle.burst_limit > 0)
+    condition     = var.stage_throttle == null ? true : (var.stage_throttle.rate_limit > 0 && var.stage_throttle.burst_limit > 0)
     error_message = "stage_throttle rate_limit and burst_limit must both be above zero. Zero is a limit of zero requests, not an absent limit -- the module writes -1 for that."
   }
 }

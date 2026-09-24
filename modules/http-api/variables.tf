@@ -212,8 +212,8 @@ variable "routes" {
   validation {
     condition = alltrue([
       for _, v in var.routes :
-      (v.throttling_burst_limit == null || v.throttling_burst_limit > 0) &&
-      (v.throttling_rate_limit == null || v.throttling_rate_limit > 0)
+      (v.throttling_burst_limit == null ? true : v.throttling_burst_limit > 0) &&
+      (v.throttling_rate_limit == null ? true : v.throttling_rate_limit > 0)
     ])
     error_message = "Per-route throttling limits must be greater than zero when set. Zero is not a way to disable a route; remove the route instead."
   }
@@ -243,7 +243,7 @@ variable "cors_configuration" {
   default = null
 
   validation {
-    condition     = var.cors_configuration == null || length(var.cors_configuration.allow_origins) > 0
+    condition     = var.cors_configuration == null ? true : length(var.cors_configuration.allow_origins) > 0
     error_message = "cors_configuration.allow_origins must name at least one origin. An empty list is a CORS configuration that allows nothing and still takes CORS handling away from the integration."
   }
 
@@ -388,12 +388,12 @@ variable "access_log_format" {
   default     = null
 
   validation {
-    condition     = var.access_log_format == null || strcontains(var.access_log_format, "$context.integrationErrorMessage")
+    condition     = var.access_log_format == null ? true : strcontains(var.access_log_format, "$context.integrationErrorMessage")
     error_message = "A supplied access_log_format must include $context.integrationErrorMessage, or an integration failure is logged as a bare 5xx with no cause recorded anywhere."
   }
 
   validation {
-    condition     = var.access_log_format == null || length(trimspace(var.access_log_format)) > 0
+    condition     = var.access_log_format == null ? true : length(trimspace(var.access_log_format)) > 0
     error_message = "access_log_format must not be blank."
   }
 }

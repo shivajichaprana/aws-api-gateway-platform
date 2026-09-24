@@ -144,17 +144,17 @@ variable "mutual_tls" {
   }
 
   validation {
-    condition     = var.mutual_tls == null || (length(var.mutual_tls.truststore_key) > 0 && !startswith(var.mutual_tls.truststore_key, "/"))
+    condition     = var.mutual_tls == null ? true : (length(var.mutual_tls.truststore_key) > 0 && !startswith(var.mutual_tls.truststore_key, "/"))
     error_message = "mutual_tls.truststore_key must be a non-empty S3 key without a leading slash. The truststore URI is built as s3://bucket/key and a leading slash produces a key with an empty first segment."
   }
 
   validation {
-    condition     = var.mutual_tls == null || endswith(var.mutual_tls.truststore_key, ".pem")
+    condition     = var.mutual_tls == null ? true : endswith(var.mutual_tls.truststore_key, ".pem")
     error_message = "mutual_tls.truststore_key must name a .pem file. A truststore is a PEM bundle; API Gateway reports a warning for a file it cannot parse, and a warning at this point is not fatal."
   }
 
   validation {
-    condition     = var.mutual_tls == null || length(trimspace(var.mutual_tls.truststore_version)) > 0
+    condition     = var.mutual_tls == null ? true : length(trimspace(var.mutual_tls.truststore_version)) > 0
     error_message = "mutual_tls.truststore_version is required. Without it, replacing the bundle in S3 changes nothing about the domain: the version is sent only when this value changes, so the old truststore stays in force and the apply reports no changes."
   }
 }

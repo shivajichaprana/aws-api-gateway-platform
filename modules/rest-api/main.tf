@@ -187,7 +187,7 @@ locals {
 
   plans_above_the_stage_throttle = var.stage_throttle == null ? [] : sort([
     for plan_key, rate in local.plan_aggregate_rate : plan_key
-    if rate != null && rate > var.stage_throttle.rate_limit
+    if rate == null ? false : rate > var.stage_throttle.rate_limit
   ])
 
   # ---------------------------------------------------------------------

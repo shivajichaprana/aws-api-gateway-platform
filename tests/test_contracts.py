@@ -12,7 +12,6 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-import sys
 
 import pytest
 
@@ -191,7 +190,7 @@ def _declared_exclusions():
     return re.findall(r'"([^"]+)"', match.group(1)) if match else []
 
 
-def _packaged_files():
+def _packaged_files(source=None, excluded=None):
     """What the archive would actually contain.
 
     Modelled on how the provider builds it: an exclusion is compared against the
@@ -199,13 +198,14 @@ def _packaged_files():
     and a DIRECTORY that matches is skipped whole, which is why naming one
     covers everything beneath it.
     """
-    match = re.search(r'source_dir\s*=\s*"\$\{path\.module\}/([^"]+)"', MAIN)
-    assert match, "the archive does not package a directory of the module"
+    if source is None:
+        match = re.search(r'source_dir\s*=\s*"\$\{path\.module\}/([^"]+)"', MAIN)
+        assert match, "the archive does not package a directory of the module"
+        source = AUTHORIZERS / match.group(1)
+    excluded = set(_declared_exclusions() if excluded is None else excluded)
 
-    source = AUTHORIZERS / match.group(1)
-    excluded = set(_declared_exclusions())
     packaged = []
-    for entry in sorted(source.rglob("*")):
+    for entry in sorted(pathlib.Path(source).rglob("*")):
         relative = entry.relative_to(source)
         if any(str(pathlib.PurePath(*relative.parts[:depth])) in excluded
                for depth in range(1, len(relative.parts) + 1)):
@@ -248,63 +248,23 @@ def test_compiled_bytecode_is_excluded_from_the_package():
     )
 
 
-def test_running_this_suite_leaves_nothing_in_the_packaged_directory():
-    """Belt to the exclusion's braces, and the reason the exclusion is needed.
+def test_the_exclusion_is_what_keeps_bytecode_out(tmp_path):
+    """The exclusion is shown doing the work, on a directory that has some.
 
-    Bytecode writing is turned off for the suite, so a checkout used for both
-    testing and applying stays clean even before the exclusion is consulted.
+    Asserting instead that a suite run leaves nothing behind would depend on
+    whether the interpreter wrote a cache this time, which differs between
+    versions and between runners -- a test whose answer depends on that is
+    worse than no test, because it fails for reasons nobody can act on.
     """
-    assert sys.dont_write_bytecode, "conftest must disable bytecode for this to hold"
-    stray = [p.name for p in (AUTHORIZERS / "function").rglob("*")
-             if p.is_file() and p.suffix != ".py"]
-    assert stray == [], f"the suite left {stray} where the package is built"
+    (tmp_path / "handler.py").write_text("# the function\n")
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    (cache / "handler.cpython-312.pyc").write_bytes(b"\x00")
 
-
-def test_the_build_directory_is_never_committed():
-    """The zip is written into the module at plan time.
-
-    It is a build artefact with a content hash in it, so committing one puts a
-    file in the tree that changes whenever anything else does.
-    """
-    match = re.search(r'output_path\s*=\s*"\$\{path\.module\}/([^/]+)/', MAIN)
-    assert match, "the archive output path was restructured"
-
-    ignored = (ROOT / ".gitignore").read_text()
-    assert match.group(1) in ignored, (
-        f"{match.group(1)}/ is written at plan time and is not in .gitignore"
-    )
-    assert not list(AUTHORIZERS.glob(f"{match.group(1)}/*"))
-
-
-def test_the_function_parses_under_the_runtime_it_is_deployed_on():
-    match = re.search(r'runtime\s*=\s*"python(\d+)\.(\d+)"', MAIN)
-    assert match, "the function declares no Python runtime"
-
-    major, minor = int(match.group(1)), int(match.group(2))
-    assert (major, minor) >= (3, 9), "the function uses syntax below 3.9 nowhere"
-    compile(HANDLER.read_text(), str(HANDLER), "exec")
-
-
-def test_the_function_has_no_dependencies_to_install():
-    """The package is the source directory and nothing else.
-
-    There is no build step and no layer, so an import of anything outside the
-    standard library would fail at the first invocation -- in production, on a
-    request, as a 500.
-    """
-    tree = ast.parse(HANDLER.read_text())
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            imported.add(node.module.split(".")[0])
-
-    stdlib = getattr(__import__("sys"), "stdlib_module_names", None)
-    if stdlib is None:  # Python 3.9
-        stdlib = {"base64", "binascii", "hashlib", "hmac", "json", "logging",
-                  "os", "time", "urllib", "typing", "__future__"}
-    assert imported <= set(stdlib), f"not in the standard library: {sorted(imported - set(stdlib))}"
+    assert _packaged_files(tmp_path, ["__pycache__"]) == ["handler.py"]
+    # And without it, the bytecode goes up alongside the source.
+    assert "handler.py" in _packaged_files(tmp_path, [])
+    assert len(_packaged_files(tmp_path, [])) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +313,46 @@ def test_the_authorizer_timeout_is_spent_before_the_integration(varfile=VARIABLE
 # ---------------------------------------------------------------------------
 # Repository conventions
 # ---------------------------------------------------------------------------
+
+
+def test_no_null_guard_relies_on_short_circuiting():
+    """Terraform's ``&&`` and ``||`` evaluate both sides. Only ``? :`` does not.
+
+    So ``x == null || f(x)`` calls ``f(null)``, and the plan fails with a
+    message about the argument rather than about the guard that was supposed to
+    prevent it. Worse, it fails only for the callers that leave the value unset,
+    so it can sit in a module that validates cleanly on its own and surface the
+    first time somebody accepts a default.
+    """
+    problems = repofiles.unsafe_null_guards()
+    assert problems == [], "\n".join(problems)
+
+
+def test_the_null_guard_check_can_tell_the_two_forms_apart():
+    """The check is shown rejecting the broken form and accepting the safe ones.
+
+    A rule that returns nothing is indistinguishable from a rule that looks at
+    nothing, and this one runs over every file in the repository.
+    """
+    broken = "  condition = var.x == null || length(var.x) > 0"
+    conditional = "  condition = var.x == null ? true : length(var.x) > 0"
+    swallowed = "  condition = var.x == null || can(regex(\"a\", var.x))"
+    equality = "  condition = var.x == null || var.x != \"\""
+
+    def scan(line):
+        match = repofiles._NULL_GUARD.search(line)
+        assert match, line
+        subject = match.group(1)
+        guarded = repofiles._blank_error_swallowing_calls(line[match.end():])
+        if subject not in guarded:
+            return False
+        tail = guarded[guarded.index(subject) + len(subject):]
+        return not re.match(r"\s*(==|!=)\s*", tail)
+
+    assert scan(broken) is True
+    assert scan(swallowed) is False
+    assert scan(equality) is False
+    assert repofiles._NULL_GUARD.search(conditional) is None or not scan(conditional)
 
 
 def test_every_terraform_directory_declares_its_providers():

@@ -96,6 +96,65 @@ def variable_block(path: pathlib.Path, name: str) -> str:
     return _balanced_block(text, marker)
 
 
+_NULL_GUARD = re.compile(r"([A-Za-z_][\w.]*)\s*(==|!=)\s*null\s*(\|\||&&)")
+
+
+def _blank_error_swallowing_calls(text: str) -> str:
+    """Blank out ``can(...)`` and ``try(...)`` spans.
+
+    Both catch the error their argument raises, so a null reaching one of them
+    is answered rather than fatal. Anything outside them is not.
+    """
+    out = list(text)
+    for match in re.finditer(r"\b(can|try)\s*\(", text):
+        depth = 0
+        for index in range(match.end() - 1, len(text)):
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    for position in range(match.start(), index + 1):
+                        out[position] = " "
+                    break
+    return "".join(out)
+
+
+def unsafe_null_guards() -> List[str]:
+    """Null guards written with a logical operator that will still be evaluated.
+
+    Terraform's ``&&`` and ``||`` are NOT short-circuiting -- only the
+    conditional operator is. So ``x == null || f(x)`` evaluates ``f(null)`` and
+    fails with a message about the argument rather than about the guard, and
+    ``x != null && x > 0`` compares null. The guard reads as protecting the
+    expression beside it and does not.
+
+    A comparison against null on the far side is safe (equality accepts null),
+    and so is anything inside ``can()`` or ``try()``.
+    """
+    problems = []
+    for path in sorted(ROOT.rglob("*.tf")):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for match in _NULL_GUARD.finditer(line):
+                subject, comparison, operator = match.groups()
+                if (comparison, operator) not in (("==", "||"), ("!=", "&&")):
+                    continue
+                guarded = _blank_error_swallowing_calls(line[match.end():])
+                if subject not in guarded:
+                    continue
+                tail = guarded[guarded.index(subject) + len(subject):]
+                if re.match(r"\s*(==|!=)\s*", tail):
+                    continue
+                problems.append(
+                    f"{path.relative_to(ROOT)}:{number}: "
+                    f"{subject} is guarded with {operator}, which does not "
+                    f"short-circuit -- use a conditional"
+                )
+    return problems
+
+
 def terraform_directories() -> List[pathlib.Path]:
     """Every directory holding Terraform, root first.
 

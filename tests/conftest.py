@@ -20,13 +20,6 @@ import pytest
 from jwks import JwksTransport, SigningKey
 from repofiles import HANDLER
 
-# Set before the function is loaded below. It is loaded from the directory the
-# deployment package is built from, so importing it normally would leave a
-# __pycache__ exactly where the archive is assembled. The module excludes that
-# directory too; this keeps a checkout used for both testing and applying clean
-# in the first place.
-sys.dont_write_bytecode = True
-
 ISSUER = "https://issuer.example.invalid/tenant"
 AUDIENCE = ["orders-api"]
 

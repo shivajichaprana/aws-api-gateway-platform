@@ -100,7 +100,7 @@ variable "managed_rule_groups" {
 
   validation {
     condition = alltrue([
-      for _, g in var.managed_rule_groups : g.capacity == null || (g.capacity > 0 && g.capacity <= 5000)
+      for _, g in var.managed_rule_groups : g.capacity == null ? true : (g.capacity > 0 && g.capacity <= 5000)
     ])
     error_message = "A declared managed rule group capacity must be between 1 and 5000, which is the maximum capacity of any single rule group."
   }
@@ -225,7 +225,7 @@ variable "rate_limit_per_five_minutes" {
   default     = null
 
   validation {
-    condition     = var.rate_limit_per_five_minutes == null || (var.rate_limit_per_five_minutes >= 100 && var.rate_limit_per_five_minutes <= 2000000000)
+    condition     = var.rate_limit_per_five_minutes == null ? true : (var.rate_limit_per_five_minutes >= 100 && var.rate_limit_per_five_minutes <= 2000000000)
     error_message = "rate_limit_per_five_minutes must be between 100 and 2000000000, or null to disable the rule."
   }
 }

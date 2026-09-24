@@ -241,7 +241,7 @@ variable "lambda_authorizers" {
     condition = alltrue([
       for _, v in var.lambda_authorizers :
       contains(v.identity_sources, "$context.routeKey")
-      if v.result_ttl_in_seconds > 0 && v.scope_enforcement != null && length(v.scope_enforcement.required_scopes) > 0
+      if v.result_ttl_in_seconds > 0 && (v.scope_enforcement == null ? false : length(v.scope_enforcement.required_scopes) > 0)
     ])
     error_message = "An authorizer that requires different scopes on different routes and caches its results must include \"$context.routeKey\" in identity_sources. Without it the cache key is the token alone, so a decision made for one route is replayed for every other route that token reaches, and the scopes on those routes stop being consulted."
   }
