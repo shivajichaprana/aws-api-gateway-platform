@@ -1,0 +1,10 @@
+# Pinned, so a dependency release cannot turn this suite red without a commit
+# to explain it.
+#
+# cryptography is a TEST dependency only. The authorizer itself imports nothing
+# outside the standard library -- there is no build step and no layer, so an
+# import it could not resolve would fail at the first invocation, in
+# production, as a 500. That property is asserted in test_contracts.py.
+pytest==8.3.4
+PyYAML==6.0.2
+cryptography==44.0.0
