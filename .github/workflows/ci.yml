@@ -1,0 +1,122 @@
+# Every gate here runs on a pull request and on main, and every one of them can
+# be run locally with the same flags.
+#
+# The validate job is a matrix over the root and each module rather than one
+# run at the root, so a fault is reported against the directory that owns it
+# instead of against the composition that happens to call it.
+name: api-platform-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TERRAFORM_VERSION: 1.9.8
+  TFLINT_VERSION: v0.53.0
+
+jobs:
+  terraform-validate:
+    name: terraform validate (${{ matrix.directory }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        directory:
+          - .
+          - modules/authorizers
+          - modules/custom-domain
+          - modules/http-api
+          - modules/openapi-api
+          - modules/rest-api
+          - modules/waf
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # Formatting is checked once, recursively, from the root. Running it per
+      # matrix entry would report the same file several times.
+      - name: terraform fmt
+        if: matrix.directory == '.'
+        run: terraform fmt -check -diff -recursive
+
+      # No backend: nothing here talks to a state store, and a validate that
+      # needed credentials would be a validate that only runs where they are.
+      - name: terraform init
+        run: terraform -chdir=${{ matrix.directory }} init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform -chdir=${{ matrix.directory }} validate
+
+  tflint:
+    name: tflint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: terraform-linters/setup-tflint@19a52fbac37dacb22a09518e4ef6ee234f2d4987 # v4.0.0
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - run: tflint --init
+
+      # Warnings are reported and do not fail the run. An error is a rule the
+      # configuration cannot satisfy; a warning is usually a preference, and a
+      # pipeline that fails on preferences stops being read.
+      - name: tflint
+        run: tflint --recursive --minimum-failure-severity=error
+
+  tests:
+    name: tests and document lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.12'
+
+      - name: install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements.txt flake8==7.1.1
+
+      # Syntax errors and undefined names. These are faults in any style.
+      - name: flake8 (critical)
+        run: flake8 --select=E9,F63,F7,F82 --show-source .
+
+      - name: flake8 (style)
+        run: flake8 --max-line-length=110 tests modules
+
+      # The authorizer is deployed as source and compiled on first invocation,
+      # so a syntax error in it is a runtime failure inside somebody's request.
+      - name: py_compile
+        run: git ls-files '*.py' | xargs -r -n1 python -m py_compile
+
+      # Run on its own as well as through the suite. A check that only works
+      # when a test runner is configured stops running the first time the
+      # environment changes, and an import gate has to keep working.
+      - name: openapi lint
+        run: python tests/lint_openapi.py
+
+      - name: pytest
+        run: pytest tests -q
+
+  ci-complete:
+    name: ci complete
+    runs-on: ubuntu-24.04
+    needs: [terraform-validate, tflint, tests]
+    steps:
+      - run: echo "All gates passed."
