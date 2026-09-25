@@ -31,3 +31,6 @@ terraform.rc
 # Python bytecode, which a local syntax check leaves behind
 __pycache__/
 *.py[cod]
+
+# Saved plans and the test runner's cache, both written by the Makefile
+.pytest_cache/
