@@ -5,6 +5,31 @@ routes and stages, authorizers, usage plans and throttling, WAF protection, an
 OpenAPI-driven deployment path, and a custom domain that can require client
 certificates.
 
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    C["Client"] --> D["Custom domain<br/>mutual TLS"]
+    D --> W["Web ACL<br/>managed rules, rate limit"]
+    W --> R["REST API<br/>keys, usage plans, throttling"]
+    D --> H["HTTP API<br/>routes, stage, access log"]
+    H --> A["Authorizers<br/>JWT or Lambda"]
+    A --> H
+    H --> I["Integrations"]
+    R --> I
+    S["OpenAPI document"] --> O["Imported REST API"]
+    O --> I
+    H --> L["Access log<br/>+ KMS key"]
+    R --> L
+    O --> L
+```
+
+Everything except the HTTP API is behind a toggle, and every toggle is off by
+default. A web ACL cannot be attached to an HTTP API, API keys and usage plans do
+not exist on one, and an API is built either from Terraform resources or from an
+imported document but never from both. [`docs/architecture.md`](docs/architecture.md)
+explains why each of those is a hard boundary rather than a configuration choice.
+
 ## Why this needs a platform rather than a resource
 
 An API Gateway API is easy to create and hard to see. Almost everything that
@@ -48,14 +73,36 @@ visible in a place an operator will actually look.
 | `modules/openapi-api/` | REST API built from an imported OpenAPI document |
 | `modules/custom-domain/` | Custom domain name, mutual TLS, base path mappings and DNS |
 | `openapi/` | OpenAPI documents imported into the API |
+| `tests/` | Offline suite and the standalone document lint gate |
+| `docs/` | Architecture and authorization reference |
+| `Makefile` | Every gate the pipeline runs, runnable locally |
+
+## Documentation
+
+| Document | Read it for |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | How the modules compose, what a request meets in order, the two dependency orderings that shape the root, and what the outputs are for |
+| [`docs/auth-model.md`](docs/auth-model.md) | Who may call what, what the bundled authorizer checks and in which order, what caching does to token expiry, and why metering is a different question |
+| [`modules/*/README.md`](modules) | The contract of one module: inputs, outputs, and the failures it moves to plan time |
+| [`tests/README.md`](tests/README.md) | What the suite covers that neither Terraform nor API Gateway does |
 
 ## Getting started
 
+Terraform 1.5 or later, and the AWS provider range pinned in `versions.tf`. The
+Makefile wraps every gate the pipeline runs, so a local check and a pipeline
+check cannot disagree about flags:
+
 ```bash
-terraform init
-terraform plan
-terraform apply
+make help          # every target, with what it is for
+make init          # root and every module, no backend
+make validate      # fmt, then validate per directory
+make test          # flake8, py_compile, document lint, pytest
+make plan          # requires credentials; nothing above does
+make deploy        # plan, confirm, apply
 ```
+
+`make check` runs everything that needs no credentials, which is what to run
+before opening a pull request.
 
 The root configuration deploys one HTTP API with its stage, its access log group
 and a customer-managed key for that group. It ships with **no integrations and
@@ -161,7 +208,9 @@ at plan time, naming the route and the key.
 `authorizers_with_cached_results` reports which decisions outlive the token that
 produced them. Both exist so the weaker reading is visible rather than assumed.
 See [`modules/authorizers/`](modules/authorizers/README.md) for the full
-contract.
+contract, and [`docs/auth-model.md`](docs/auth-model.md) for the model those
+inputs express — the order the bundled function checks things in, what caching
+does to a token's expiry, and why an API key decides nothing.
 
 ## Metered access and protection
 
@@ -295,9 +344,24 @@ expiry into the access log and deliberately never writes the certificate itself.
 
 ## Validation
 
-No pipeline runs in this repository yet. Until one does, changes are checked
-with `terraform fmt`, `terraform validate` and a reading of the plan against the
-module's own preconditions.
+Every gate runs on a pull request and on `main`, and every one of them runs
+locally through the Makefile with the same flags.
+
+| Gate | `make` target | What it is for |
+|---|---|---|
+| `terraform fmt -check -recursive` | `fmt-check` | Formatting, once, from the root |
+| `terraform validate` per directory | `validate` | A fault reported against the directory that owns it, not against the composition that called it |
+| `tflint --recursive` | `lint` | Provider-level errors; warnings are reported and do not fail the run |
+| `flake8` critical subset | `lint-python` | Syntax errors and undefined names — faults in any style |
+| `py_compile` | `lint-python` | The authorizer ships as source and compiles on first invocation, so a syntax error in it is a `500` inside somebody's request |
+| `python tests/lint_openapi.py` | `openapi-lint` | Document rules as a standalone gate, so they keep working where no test runner is configured |
+| `pytest tests` | `pytest` | What two files have to agree about and nothing enforces |
+
+Nothing in that list needs credentials or a state store, which is what lets it
+all run on a pull request from a fork. `terraform validate` runs against the root
+as well as every module, because a module validated on its own is given no
+variable values — so its `validation` conditions are never evaluated, and a fault
+that only appears where the module is called would be reported clean.
 
 ## Design principles
 
@@ -317,6 +381,12 @@ module's own preconditions.
 - **One source of truth per API.** Routing comes either from a document or from
   Terraform, never from both, and where a document and a resource state the same
   property they are required to agree rather than resolved by ordering.
+
+## Versioning
+
+Released tags are the stable interface. `main` is not: module inputs and outputs
+change there without notice. Pin a module source to a tag, and read the release
+notes before moving between them.
 
 ## License
 
